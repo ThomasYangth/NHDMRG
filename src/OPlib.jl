@@ -1,4 +1,4 @@
-export Term, Operator, getOp, LindbladMPO, LindbladMPO_W
+export Term, Operator, getOp
 
 const Term = NamedTuple{(:coef, :inds), Tuple{ComplexF64, Vector{Int}}}
 const Operator = Vector{Term}
@@ -54,6 +54,22 @@ function getMats(t::Term; type::String = "", add_coef::Number = 1)
     return lst
 end
 
+"""
+    function getOp(terms::Dict{String, <:Number})
+
+Converts a dictionary of terms to an operator.
+
+# Arguments
+- `terms::Dict{String, <:Number}`: A dictionary of terms, where the keys are the types of the terms and the values are the coefficients.
+
+# Returns
+- `op::Operator`: The operator.
+
+# Example
+```julia
+getOp(Dict("ZZ"=>J, "Z"=>hz, "X"=>hx)) # Returns an operator with terms J*ZZ, hz*Z, and hx*X.
+```
+"""
 function getOp(terms::Dict{String, <:Number})
     op = Term[]
     for (type,val) in terms

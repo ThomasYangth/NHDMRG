@@ -1,4 +1,4 @@
-include("NHDMRG.jl")
+include("../src/NHDMRG.jl")
 using .NHDMRG
 
 v = [1,2,3,4]

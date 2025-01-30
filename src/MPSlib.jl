@@ -1,5 +1,23 @@
 using LinearAlgebra: I
 
+export MPSonSites, MPOonSites, LindbladMPO, LindbladMPO_W
+
+"""
+    function MPSonSites(M0::Array{<:Number, 3}, sites::Sites; leftindex::Int=1, rightindex::Int=2)
+
+Construct a translation-invariant MPS from a 3-tensor. The 3-tensor should have indices
+in the order (left-link, site, right-link). At the first site, the left-link is contracted to leftindex,
+and similar at the last site.
+
+# Arguments
+- `M0::Array{<:Number, 3}`: The 3-tensor representing the MPS.
+- `sites::Sites`: The site indices.
+- `leftindex::Int=1`: The index to contract the left-link at the first site.
+- `rightindex::Int=2`: The index to contract the right-link at the last site.
+
+# Returns
+- `MPS`: The MPS constructed from the 3-tensor.
+"""
 function MPSonSites(M0::Array{<:Number, 3}, sites::Sites; leftindex::Int=1, rightindex::Int=2)
     L = length(sites)
     if L == 1
@@ -12,6 +30,20 @@ function MPSonSites(M0::Array{<:Number, 3}, sites::Sites; leftindex::Int=1, righ
     end
 end
 
+"""
+    function MPOonSites(M0::Array{<:Number, 4}, sites::Sites; leftindex::Int=1, rightindex::Int=2)
+
+Similar to MPSonSites. The 4-tensor M0 should have indices in the order (site', site, left-link, right-link).
+
+# Arguments
+- `M0::Array{<:Number, 4}`: The 4-tensor representing the MPO.
+- `sites::Sites`: The site indices.
+- `leftindex::Int=1`: The index to contract the left-link at the first site.
+- `rightindex::Int=2`: The index to contract the right-link at the last site.
+
+# Returns
+- `MPO`: The MPO constructed from the 4-tensor.
+"""
 function MPOonSites(M0::Array{<:Number, 4}, sites::Sites; leftindex::Int=1, rightindex::Int=2)
     L = length(sites)
     if L == 1
@@ -24,6 +56,18 @@ function MPOonSites(M0::Array{<:Number, 4}, sites::Sites; leftindex::Int=1, righ
     end
 end
 
+"""
+    function OpSumMPS(op::Operator, sites::Sites)
+
+Create a MPS correspond to a translationally invariant operator given by local terms.
+
+# Arguments
+- `op::Operator`: The operator to be represented. Each term is translated on an OBC lattice to all possible positions.
+- `sites::Sites`: The site indices.
+
+# Returns
+- `MPS`: The MPS representation of the operator.
+"""
 function OpSumMPS(op::Operator, sites::Sites)
 
     # Creates a MPS with the following bond dimension:
@@ -87,7 +131,6 @@ end
 
 Returns a MPO that measures the size of an operator.
 """
-
 function sizeMPO(sites::Sites)
 
     M0 = ComplexF64.(zeros(4, 4, 2, 2))
@@ -99,9 +142,21 @@ function sizeMPO(sites::Sites)
 
 end
 
-# Realized in a similar way as OpSumMPS
-function LindbladMPO_W(H, Lis; dagger = false)
+"""
+    function LindbladMPO_W(H, Lis; dagger = false)
 
+Realized in a similar way as OpSumMPS. Returns the 4-tensor W, instead of a MPO.
+
+# Arguments
+- `H::Operator`: The Hamiltonian.
+- `Lis::Array{Operator}`: The jump operators.
+- `dagger::Bool=false`: if false, returns the Schrodinger-picture Lindbladian which acts on density matrices.
+    If true, returns the Heisenberg-picture Lindbladian which acts on operators.
+
+# Returns
+- `W::Array{ComplexF64, 4}`: The 4-tensor representing the MPO of the Lindbladian.
+"""
+function LindbladMPO_W(H, Lis; dagger = false)
     thisax = Ref(3) # Current axes
     dims = Ref([]) # dims[i]:dims[i+1] are the axes for operator i
     mats = Ref([])
@@ -169,12 +224,22 @@ function LindbladMPO_W(H, Lis; dagger = false)
 
 end
 
+"""
+    function LindbladMPO(H, Lis, sites; dagger = false)
+
+Realized in a similar way as OpSumMPS.
+"""
 function LindbladMPO(H, Lis, sites; dagger = false)
 
     return MPOonSites(LindbladMPO_W(H, Lis; dagger=dagger), sites; leftindex=1, rightindex=2)
 
 end
 
+"""
+    function printMPSO(W)
+
+Print the indices and the array value of a MPS or MPO.
+"""
 function printMPSO(W)
     H = reduce(*, W)
     Winds = inds(H)
@@ -205,12 +270,12 @@ function printInds(W)
 end
 
 """
-    find_sites_and_links(M::MPS)
+    find_sites_and_links(M::Union{MPS,MPO})
 
-Given a MPS, returns the site indices and link indices.
+Given a MPS or MPO, returns the site indices and link indices.
 
 # Arguments
-- `M::MPS`: The MPS to be analyzed.
+- `M::Union{MPS,MPO}`: The MPS or MPO to be analyzed.
 
 # Returns
 - `sites::Vector{Index{Int}}`: The site indices.
@@ -243,4 +308,32 @@ function find_sites_and_links(M::Union{MPS,MPO})
 
     return sites, links
 
+end
+
+function replaceindsP(A::ITensor, oldinds::Sites, newinds::Sites; plvl::Int=0)
+
+    if length(oldinds) != length(newinds)
+        throw(ArgumentError("The number of old indices must be the same as the number of new indices!"))
+    end
+
+    A = deepcopy(A)
+
+    for i in eachindex(oldinds)
+        for j = 0:plvl
+            replaceind!(A, prime(oldinds[i], j), prime(newinds[i], j))
+        end
+    end
+
+    return A
+end
+
+function renameinds(A::ITensor, inds::Sites, newnames::Vector{String}; plvl::Int=0)
+
+    if length(inds) != length(newnames)
+        throw(ArgumentError("The number of old indices must be the same as the number of new names!"))
+    end
+
+    newinds = [Index(dim(inds[i]), newnames[i]) for i in eachindex(inds)]
+    return replaceinds(A, inds, newinds; plvl=plvl), newinds
+    
 end

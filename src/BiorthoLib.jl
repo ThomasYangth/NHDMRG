@@ -33,14 +33,24 @@ I (link, newlink), Ib (link', newlink'), such that `I*Y` $\approx$ M and `Ib*Yb`
 - `newlink`: Index, returned only if return_newlink=true. The newlink index.
 
 """
-function decomp(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, timing = false, method::DM_Method = LR, return_newlink::Bool=false)
+function decomp(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, timing = false, method::DM_Method = LR, return_newlink::Bool=false, newlink_name::String="")
     if method == BB
-        return decomp_biortho(M, Mb, link; chi_max=chi_max, timing=timing, return_newlink=return_newlink)
+        return decomp_biortho(M, Mb, link; chi_max=chi_max, timing=timing, return_newlink=return_newlink, newlink_name=newlink_name)
     elseif method == LR
-        return decomp_lrrho(M, Mb, link; chi_max=chi_max, timing=timing, return_newlink=return_newlink)
+        return decomp_lrrho(M, Mb, link; chi_max=chi_max, timing=timing, return_newlink=return_newlink, newlink_name=newlink_name)
     else
         throw(ArgumentError("Unrecognized DM_Method: $method."))
     end
+end
+
+# Same as above, but with the link given by multiple links combined.
+function decomp(M::ITensor, Mb::ITensor, links::Sites; kwargs...)
+    comb = combiner(links...)
+    results = decomp(M*comb, Mb*comb', inds(comb)[1]; kwargs...)
+    # We use a "results" catch so that it works with both return_newlink=true and false
+    # I and Ib have to be swithced back to the original links
+    results = [(i==3) ? r*comb : ((i==4) ? r*comb' : r) for (i,r) in enumerate(results)]
+    return results
 end
 
 # """
@@ -195,16 +205,17 @@ function doubleMPSSize(M::MPS, Mb::MPS; chi_max::Int=0, timing::Bool=false, meth
 end
 
 @doc raw"""
-    decomp(M::ITensor, Mb::ITensor, sites::Sites; chi_max::Int=0, timing::Bool=false, method::DM_Method=LR)
+    decomp2MPS(M::ITensor, Mb::ITensor, sites::Sites; chi_max::Int=0, timing::Bool=false, method::DM_Method=LR)
 
 Decompose a pair of ITensors into MPS. Will produce left-normal form assuming sites is in ascending order.
 
 # Arguments
-- `M`: ITensor, the right-vector tensor to be decomposed. Should have indices `sites`.
-- `Mb`: ITensor, the left-vector tensor to be decomposed. Should have indices `sites'`.
+- `M`: ITensor, the right-vector tensor to be decomposed.
+    Indices should contain `sites`, other indices will be treated as external link.
+- `Mb`: ITensor, the left-vector tensor to be decomposed.
+    Indices should contain `sites`, other indices will be treated as external link.
 - `sites`: Sites, the sites of the MPS. Should be in ascending order if left-normal form is desired, and vice versa.
 - `chi_max`: Int, default 0. The maximal bond dimension.
-- `open_end`: Bool, default false. Whether to leave the end open. If true, the last site will be decomposed with an imaginary new link, and the new link will be returned.
 - `timing`: Bool, default false. Whether to print timing information.
 - `method`: DM_Method, default LR. The method to use for the decomposition. Options:
     LR (**L**eft- and **R**ight-vector density matrix method, see `?decomp_lrrho`)
@@ -213,32 +224,60 @@ Decompose a pair of ITensors into MPS. Will produce left-normal form assuming si
 # Returns
 - `Y`: MPS, the right-vector MPS after decomposition.
 - `Yb`: MPS, the left-vector MPS after decomposition.
-- `newlink`: Index, returned only if open_end=true. The new link index.
+- `endlink`: Index, the new link index. Returned only if sites(M) contains other indices other than sites.
 """
-function decomp(M::ITensor, Mb::ITensor, sites::Sites; chi_max::Int=0, open_end::Bool=false, timing::Bool=false, method::DM_Method=LR, linknames::Vector{String}=String[])
+function decomp2MPS(M::ITensor, Mb::ITensor, sites::Sites; chi_max::Int=0, timing::Bool=false, method::DM_Method=LR, linknames::Vector{String}=String[])
 
     Nsites = length(sites)
 
+    # Prevent modification on the original tensors
+    M = deepcopy(M)
+    Mb = deepcopy(Mb)
+    
     Y = ITensor[]
     Yb = ITensor[]
 
-    for i = 1:Nsites-1
+    Minds = inds(M)
+    if inds(Mb) != Minds'
+        throw(ArgumentError("inds(M)' != inds(Mb)! inds(M) = $Minds, inds(Mb) = $(inds(Mb))"))
+    end
+    if !all([site in Minds for site in sites])
+        throw(ArgumentError("sites !in inds(M)!\ninds(M)=$(Minds), sites=$sites"))
+    end
+
+    links = [i for i in Minds if !(i in sites)]
+    if length(links) + length(sites) != length(Minds)
+        throw(ArgumentError("Indices of M should be partitioned into sites and links!"))
+    end
+
+    if length(links) > 0
+        lastlink = links[1]
+    end
+
+    for i = 1:Nsites
 
         # M should have indices (links[i-1],sites[i],sites[i+1:end])
-        # We define Li = (links[i-1],sites[i]), Ri = (sites[i+1:end])
+        # We define Li = (links[i-1],sites[i]), Ri = (sites[i+1:end],links)
         # And then do a decomposition with link=Ri, others=Li
         # The resulting Y would be (Li,newlink), which we take to be the site tensor in the MPS
         # I would be (newlink,Ri), which we take to be the new M
 
-        remsites = sites[i+1:end]
+        # i=Nsites will work only when there are dangling links in M
+        if i==Nsites && length(links)==0
+            break
+        end
+
+        remsites = vcat(sites[i+1:end], links)
         rcomb = combiner(remsites)
         Ri = inds(rcomb)[1]
 
         M *= rcomb
         Mb *= rcomb'
         Yi, Ybi, M, Mb, newlink = decomp(M, Mb, Ri; chi_max=chi_max, timing=timing, method=method, return_newlink=true)
+        lastlink = newlink
         if length(linknames) >= i
             newlink_renamed = Index(dim(newlink), linknames[i])
+            lastlink = newlink_renamed
             Yi *= delta(newlink, newlink_renamed)
             Ybi *= delta(newlink', newlink_renamed')
             M *= delta(newlink, newlink_renamed)
@@ -251,14 +290,8 @@ function decomp(M::ITensor, Mb::ITensor, sites::Sites; chi_max::Int=0, open_end:
 
     end
 
-    if open_end
-        # Append an imaginary new link to the end
-        endlink = Index(1, "EndLink")
-        endtensor = ITensor(1, endlink)
-        Mi, Mbi, _, _, endlink = decomp(M*endtensor, Mb*endtensor', endlink; chi_max=chi_max, timing=timing, method=method, return_newlink=true)
-        push!(Y, Mi)
-        push!(Yb, Mbi)
-        return MPS(Y), MPS(Yb), endlink
+    if length(links) > 0
+        return MPS(Y), MPS(Yb), lastlink
     else
         # The last M, having indices (links[Nsites-1],sites[Nsites]), is just the last Y.
         push!(Y, M)
@@ -274,7 +307,7 @@ end
 Realizes `decomp()` with the biorthonormal-block method. See `?decomp` for argument definition and function description.
 This method follows *arXiv*:2401.15000.
 """
-function decomp_biortho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, unitarize::Bool = false, timing::Bool = false, return_newlink::Bool=false)
+function decomp_biortho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, unitarize::Bool = false, timing::Bool = false, return_newlink::Bool=false, newlink_name::String="")
 
     if timing
         t1 = now()
@@ -295,6 +328,10 @@ function decomp_biortho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, 
     if idm' != inds(Mb)
         throw(ArgumentError("inds(M)' != inds(Mb)! inds(M) = $idm, inds(Mb) = $(inds(Mb))"))
     end
+
+    # Avoid modification on the input parameters.
+    M = deepcopy(M)
+    Mb = deepcopy(Mb)
     
     # Combine the non-link indices into one index
     Mcomb = combiner([i for i in idm if i != link]) # Mcomb combiners others to Mci
@@ -334,7 +371,11 @@ function decomp_biortho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, 
 
     end
 
-    newlink = Index(size(Ys)[2], tags(link))
+    if newlink_name == ""
+        newlink = Index(size(Ys)[2], tags(link))
+    else
+        newlink = Index(size(Ys)[2], newlink_name)
+    end
 
     Y = ITensor(Ys, Mci, newlink)
     Yb = ITensor(Ysb, Mci', newlink')
@@ -687,6 +728,22 @@ end
 
 function eigLR(L::ITensor, R::ITensor, M::ITensor, A::ITensor, Ab::ITensor; sigma::ComplexF64 = shift_eps*im, use_sparse = true, tol = 0, normalize_against = [], ncv0 = 50, timing = false)
 
+    physbond = setdiffS(inds(A), union(inds(L), inds(R));
+        errorMsg="There should be exactly one physical bond in A!\nInstead, inds(A)=$(inds(A)), inds(L)=$(inds(L)), inds(R)=$(inds(R)).")
+
+    Ham = L*M*R
+
+    for norm_tuple in normalize_against
+        Ln,Rn,Mnb,Lnb,Rnb,Mn,amp = norm_tuple
+        Ham += amp * (Lnb*Mn*Rnb*delta(physbond',physbond)) * (Ln*Mnb*Rn*delta(physbond',physbond))
+    end
+
+    return eigLR(Ham, A, Ab; sigma=sigma, use_sparse=use_sparse, tol=tol, ncv0=ncv0, timing=timing)
+
+end
+
+function eigLR(Ham::ITensor, A::ITensor, Ab::ITensor; sigma::ComplexF64 = shift_eps*im, use_sparse = true, tol = 0, ncv0 = 50, timing = false)
+
     if timing
         t1 = now()
     end
@@ -697,27 +754,23 @@ function eigLR(L::ITensor, R::ITensor, M::ITensor, A::ITensor, Ab::ITensor; sigm
         end
     end
 
-    physbond = setdiff(inds(A), union(inds(L), inds(R)))
-    if length(physbond) != 1
-        throw(ArgumentError("There should be exactly one physical bond in A!\nInstead, inds(A)=$(inds(A)), inds(L)=$(inds(L)), inds(R)=$(inds(R))."))
-    end
-    physbond = physbond[1]
-
-    Ham = L*M*R
     bonds = [i for i in inds(Ham) if plev(i)==0]
+    if Set(bonds) != Set(inds(A))
+        throw(ArgumentError("The indices of Ham ::$(bonds):: should be the same as the indices of A ::$(inds(A))::!"))
+    end
+    if Set(bonds') != Set(inds(Ab))
+        throw(ArgumentError("The primed indices of Ham ::$(bonds'):: should be the same as the indices of Ab ::$(inds(Ab))::!"))
+    end
+
+    timestamp("In eigLR, bond dimensions: $bonds")
     comb = combiner(bonds...)
     mind = inds(comb)[1]
     oind = inds(comb)[2:end]
+
     Hdim = dim(mind)
-    Ham = Ham*comb*comb'
-    timestamp("In eigLR, bond dimensions: $bonds")
     ncv0 = min(ncv0, Hdim)
 
-    for norm_tuple in normalize_against
-        Ln,Rn,Mnb,Lnb,Rnb,Mn,amp = norm_tuple
-        Ham += amp * (Lnb*Mn*Rnb*delta(physbond',physbond)*comb') * (Ln*Mnb*Rn*delta(physbond',physbond)*comb)
-    end
-
+    Ham = Ham*comb*comb'
     Ham = Array(Ham, mind', mind)
     w, v = doeig(Ham, vec(Array(A, oind...));sigma=sigma, tol=tol, ncv0=ncv0, use_sparse=use_sparse)
     w1, vL = doeig(transpose(Ham), vec(Array(Ab, oind'...)); sigma=(w+shift_eps), tol=tol, ncv0=ncv0, use_sparse=use_sparse)
@@ -762,7 +815,7 @@ I is constructed as I($\lambda$,i) = $\langle\lambda|$M(i,:), and similarly for 
 In this case I*Y = $\left[\sum_\lambda |\lambda\rangle\langle\lambda| \right]$, which is identity if
 we have chosen all the $\lambda$'s, and a projector into the largest-singular-value subspace if we have done a cutoff.
 """
-function decomp_lrrho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, timing::Bool = false, return_newlink::Bool=false)
+function decomp_lrrho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, timing::Bool = false, return_newlink::Bool=false, newlink_name::String="")
 
     if timing
         t1 = now()
@@ -778,6 +831,10 @@ function decomp_lrrho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, ti
     if idm' != inds(Mb)
         throw(ArgumentError("inds(M)' != inds(Mb)! inds(M) = $idm, inds(Mb) = $(inds(Mb))"))
     end
+
+    # Avoid modifications on the input parameters
+    M = deepcopy(M)
+    Mb = deepcopy(Mb)
     
     # Combine the non-link indices into one index
     Mcomb = combiner([i for i in idm if i != link])
@@ -797,7 +854,11 @@ function decomp_lrrho(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, ti
     end
 
     # Create a new link
-    newlink = Index(size(U)[2], tags(link))
+    if newlink_name == ""
+        newlink = Index(size(U)[2], tags(link))
+    else
+        newlink = Index(size(U)[2], newlink_name)
+    end
 
     U = ITensor(U, Mci, newlink)
     I = conj(U)*M
