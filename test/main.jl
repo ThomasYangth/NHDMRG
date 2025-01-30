@@ -87,6 +87,7 @@ diss = sqrt(0.1)
 W = LindbladMPO_W(getOp(Dict("ZZ"=>1, "Z"=>0.7, "X"=>1.5)), [getOp(Dict("X"=>diss)), getOp(Dict("Y"=>diss)), getOp(Dict("Z"=>diss))]; dagger=false)
 mpo = MPOonSites(W, sites; leftindex=1, rightindex=2)
 do_DMRGX_and_save(mpo, sites, 5, "Test1111Datas"; M=M, Mb=Mb, method=BB) # This is just to test things work for a trivially small system.
+# Method: BB = Biorthogonal-block, LR = left-and-right-averaged density matrix.
 
 #doDMRG_excited_IncL(W, 40, 5, 2; k=3, debug=true, method=BB, stop_if_not_converge=true)
 
