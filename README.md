@@ -2,10 +2,12 @@
 
 A library for density-matrix renormalization group for non-Hermitian systems. Still under development.
 
+Currently to run: `julia test/main.jl`.
+
 Modified based on the open-source (Hermitian) DMRG code on [tensors.net by Glen Evenbly](https://www.tensors.net/dmrg).
 Non-Hermitian DMRG algorithm based on [1] and [2].
 
-The code runs on Julia.Library requirements:
+The code runs on Julia. Library requirements:
 - ITensors
 - Arpack
 - MatrixEquations
