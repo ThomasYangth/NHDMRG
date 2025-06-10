@@ -4,6 +4,14 @@ import Arpack:eigs as arpack_eigs
 using MatrixEquations: sylvc
 using LinearAlgebra
 
+using Pkg
+hasjd = any(dep.name == "JacobiDavidson" for dep in values(Pkg.dependencies())) # Whether or not Jacobi-Davidson is available
+if hasjd
+    using JacobiDavidson
+    fprintln("Jacobi-Davidson is available.")
+end
+
+
 @doc raw"""
     decomp(M::ITensor, Mb::ITensor, link::Index; chi_max::Int = 0, timing::Bool = false, method::DM_Method = LR)
 
@@ -444,6 +452,47 @@ function unitize(v1, v2; return_ratios = false)
 end
 
 """
+    function SVDbiortho(Y::AbstractMatrix, Yb::AbstractMatrix; return_lambda::Bool = false)
+
+Biorthonormalization with SVD. The goal is to find invertible matrices L and Lb,
+such that (Yb*Lb).T*(Y*L) = I.
+
+To do this, we first perform QR decomposition on Y and Yb, to get QY*RY and QYb*RYb, which are the columns orthonormalized.
+Then we compute QQ = QYb.T * QY, and let QQ = U * S * V', where U and V are unitary, and S is diagonal.
+In this case we let Y*L = QY * V * Diagonal(S.^(-1/2)), and Yb*Lb = QYb * conj.(U) * Diagonal(S.^(-1/2)).
+This ensures that Yb.T * Y = I, and Y and Yb have a balanced, minimal condition number.
+If we want L, we can do L = inv(RY) * V * Diagonal(S.^(-1/2)), and similar for Lb.
+
+# Arguments
+- `Y`: Matrix, right eigenvectors in its columns.
+- `Yb`: Matrix, left eigenvectors in its columns.
+- `return_lambda`: Bool, default false. If true, also return the L matrices.
+# Returns
+- `Y*L`: Matrix, new right eigenvectors in its columns. Equals to Y times a matrix on the right.
+- `Yb*Lb`: Matrix, new left eigenvectors in its columns. Equals to Yb times a matrix on the right.
+- `L`: Matrix, returned only if return_lambda=true. The matrix that transforms Y to Y*L.
+- `Lb`: Matrix, returned only if return_lambda=true. The matrix that transforms Yb to Yb*Lb.
+
+"""
+function SVDbiortho(Y::AbstractMatrix, Yb::AbstractMatrix; return_lambda::Bool = false)
+    Yqr = qr(Y)
+    Ybqr = qr(Yb)
+    QY = Matrix(Yqr.Q)
+    QYb = Matrix(Ybqr.Q)
+    QQsvd = svd(QYb.T * QY)
+    E = Diagonal(QQsvd.S.^(-1/2))
+    Vtrans = Matrix(QQsvd.V) * E
+    Utrans = conj.(Matrix(QQsvd.U)) * E
+
+    if return_lambda
+        return QY*Vtrans, QYb*Utrans, inv(UpperTriangular(Yqr.R))*Vtrans, inv(UpperTriangular(Ybqr.R))*Utrans
+    else
+        return QY*Vtrans, QYb*Utrans
+    end
+
+end
+
+"""
     function GSbiortho(Y, Yb)
 
 Gram-Shimidt Biorthonormalization, the goal is to make Yb.T*Y = I.
@@ -613,12 +662,35 @@ end
 shift_eps = 1e-3 # Shift sigma by a small imaginary value to avoid symmetric eigenvalues
 
 """
+    function jacdav_eigs(Ham::Matrix; nev::Int=1, sigma::ComplexF64=im*shift_eps, tol::Float64=0., v0::Vector{ComplexF64}=ComplexF64[], ncv::Int=50)
+
+"""
+function jacdav_eigs(Ham::AbstractMatrix; nev::Int=1, sigma::ComplexF64=im*shift_eps, tol::Float64=1e-16, v0::Vector{ComplexF64}=ComplexF64[], ncv::Int=50)
+
+    if !hasjd
+        throw(ErrorException("Jacobi-Davidson is not available."))
+    end
+
+    ssmin = Int(ncv/2)
+    max_iter = ncv*5
+    
+    pschur, _ = jdqr(Ham; pairs=nev, target=Near(sigma), subspace_dimensions=ssmin:ncv, max_iter=max_iter)
+
+    if nev == 1
+        return pschur.values, pschur.Q
+    else
+        throw(ErrorException("Not implemented yet."))
+    end
+
+end
+
+"""
     function doeig(Ham, v0; sigma::ComplexF64=ComplexF64(0), tol::Float64=0., ncv0::Int=50, use_sparse::Bool=true)
 
 Do sparse diagonalization to find the eigenvalue of a matrix Ham closest to sigma.
 If the sparse diagonalization fails to converge, switch to dense diagonalization.
 """
-function doeig(Ham, v0; sigma::ComplexF64=shift_eps*im, tol::Float64=0., ncv0::Int=50, use_sparse::Bool=true, k::Int=1)
+function doeig(Ham, v0; sigma::ComplexF64=shift_eps*im, tol::Float64=1e-16, ncv0::Int=50, use_sparse::Bool=true, k::Int=1, method::Symbol=:arpack)
 
     Hdim = size(Ham)[1]
 
@@ -636,7 +708,13 @@ function doeig(Ham, v0; sigma::ComplexF64=shift_eps*im, tol::Float64=0., ncv0::I
 
             try
                 fprintln("Trying sprase diagonalization with ncv = $ncv")
-                eigvalues, eigvectors = arpack_eigs(Ham; nev=k, which=:LM, sigma=sigma, tol=tol, v0=v0, ncv=ncv)
+                if method==:arpack
+                    eigvalues, eigvectors = arpack_eigs(Ham; nev=k, which=:LM, sigma=sigma, tol=tol, v0=v0, ncv=ncv)
+                elseif method==:jacdav
+                    eigvalues, eigvectors = jacdav_eigs(Ham; nev=k, sigma=sigma, tol=tol, ncv=ncv)
+                else
+                    throw(ErrorException("Unknown method $method."))
+                end
                 fprintln("Converged eigenvalue(s): ", eigvalues)
                 if length(eigvalues) < k
                     throw(ErrorException("No convergence: Not enough eigenvalues found, $(length(eigvalues))/$k."))
@@ -666,8 +744,12 @@ function doeig(Ham, v0; sigma::ComplexF64=shift_eps*im, tol::Float64=0., ncv0::I
     catch e
 
         if hasfield(typeof(e), :msg)
-            fprintln(e.msg)
+            if e.msg != "This exception jumps the code to the non-sparse method"
+                rethrow(e)
+            end
+            # fprintln(e.msg)
         else
+            rethrow(e)
             fprintln(e)
         end
         fprintln("Switching to dense algorithm.")
@@ -685,7 +767,8 @@ function doeig(Ham, v0; sigma::ComplexF64=shift_eps*im, tol::Float64=0., ncv0::I
 
 end
 
-function eigLR(L::ITensor, R::ITensor, M::ITensor, A::ITensor, Ab::ITensor; sigma::ComplexF64 = shift_eps*im, use_sparse = true, tol = 0, normalize_against = [], ncv0 = 50, timing = false)
+function eigLR(L::ITensor, R::ITensor, M::ITensor, A::ITensor, Ab::ITensor; sigma::ComplexF64 = shift_eps*im, use_sparse = true,
+    tol = 0, normalize_against = [], ncv0 = 50, timing = false, method::Symbol=:arpack)
 
     if timing
         t1 = now()
@@ -719,8 +802,8 @@ function eigLR(L::ITensor, R::ITensor, M::ITensor, A::ITensor, Ab::ITensor; sigm
     end
 
     Ham = Array(Ham, mind', mind)
-    w, v = doeig(Ham, vec(Array(A, oind...));sigma=sigma, tol=tol, ncv0=ncv0, use_sparse=use_sparse)
-    w1, vL = doeig(transpose(Ham), vec(Array(Ab, oind'...)); sigma=(w+shift_eps), tol=tol, ncv0=ncv0, use_sparse=use_sparse)
+    w, v = doeig(Ham, vec(Array(A, oind...));sigma=sigma, tol=tol, ncv0=ncv0, use_sparse=use_sparse, method=method)
+    w1, vL = doeig(transpose(Ham), vec(Array(Ab, oind'...)); sigma=(w+shift_eps), tol=tol, ncv0=ncv0, use_sparse=use_sparse, method=method)
     # Right here, the second diagonalization is to find the right eigenvector of HT.
     # The eigenvalue of H^T should be the same as the eigenvalue of H.
     # Ab should contain the left eigenvector, which is the transpose of the right eigenvector of H^T.

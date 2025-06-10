@@ -45,7 +45,7 @@ Description of the return value.
 """
 function doDMRG_excited(M::MPS, Mb::MPS, W::MPO, chi_max::Int;
     k::Int=1, expected_gap::Float64=1, tol::Float64 = 1e-15,
-    numsweeps::Int = 10, dispon::Int = 2, debug::Bool = false, method::DM_Method = LR,
+    numsweeps::Int = 10, dispon::Int = 2, debug::Bool = false, method::DM_Method = LR, eig_method::Symbol = :arpack,
     cut::Float64 = 1e-8, stop_if_not_converge::Bool = true, savename = nothing, override::Bool = false)
 
     L = length(W)
@@ -151,7 +151,7 @@ function doDMRG_excited(M::MPS, Mb::MPS, W::MPO, chi_max::Int;
                 Ekeep, Hdifs, Y, Yb = doDMRG_IncChi(M, Mb, W, chi_max;
                     normalize_against = [(Ms[i],Mbs[i],-expected_gap*(thisk-i)) for i = 1:thisk-1],
                     sigma=sigma, vt_amp=vt_amp, tol_end=tol, chi_start=chi_start,
-                    numsweeps=numsweeps, dispon=dispon, debug=debug, method=method)
+                    numsweeps=numsweeps, dispon=dispon, debug=debug, method=method, eig_method=eig_method)
 
                 if Hdifs[end] < 1e-3
                     fprintln("Found eigenvalue $thisk = $(fmtcpx(Ekeep[-1]))")
@@ -234,7 +234,7 @@ end
 
 function doDMRG_excited_IncL(W0::Array{<:Number, 4}, chi_max::Int, L0::Int, doubles::Int;
     k::Int=1, expected_gap::Float64=1., tol::Float64 = 1e-15,
-    numsweeps::Int = 10, dispon::Int = 2, debug::Bool = false, method::DM_Method = LR,
+    numsweeps::Int = 10, dispon::Int = 2, debug::Bool = false, method::DM_Method = LR, eig_method::Symbol = :arpack,
     cut::Float64 = 1e-8, stop_if_not_converge::Bool = true, savename = nothing, override::Bool = false)
 
     if isnothing(savename)
@@ -254,8 +254,8 @@ function doDMRG_excited_IncL(W0::Array{<:Number, 4}, chi_max::Int, L0::Int, doub
     W_L0 = MPOonSites(W0, initSites; leftindex=1, rightindex=2)
     W_L0_mat, comb = MPO_to_Matrix(W_L0)
     Mci = inds(comb)[1]
-    wR, vR = doeig(W_L0_mat, ComplexF64[randn() + im * randn() for _ in 1:L0]; k=k, use_sparse=false)
-    wL, vL = doeig(transpose(W_L0_mat), ComplexF64[randn() + im * randn() for _ in 1:L0]; k=k, use_sparse=false)
+    wR, vR = doeig(W_L0_mat, ComplexF64[randn() + im * randn() for _ in 1:L0]; k=k, use_sparse=false, method=eig_method)
+    wL, vL = doeig(transpose(W_L0_mat), ComplexF64[randn() + im * randn() for _ in 1:L0]; k=k, use_sparse=false, method=eig_method)
 
     fprintln("Found right eigenvalues: ", wR)
     fprintln("Found left eigenvalues: ", wL)
@@ -308,8 +308,8 @@ function doDMRG_excited_IncL(W0::Array{<:Number, 4}, chi_max::Int, L0::Int, doub
             # Do DMRG for this size
             _, _, Ms[thisk,j], Mbs[thisk,j] = doDMRG(Ms[thisk,j], Mbs[thisk,j], thisW, chi_max;
                     normalize_against = [(Ms[i,j], Mbs[i,j], -expected_gap*(thisk-i)) for i = 1:thisk-1],
-                    sigma = shift_eps*im + 0.1, numsweeps=numsweeps, dispon=dispon, debug=debug, method=method,
-                    stop_if_not_converge=stop_if_not_converge)
+                    sigma = shift_eps*im + 0.1*0, numsweeps=numsweeps, dispon=dispon, debug=debug, method=method,
+                    stop_if_not_converge=stop_if_not_converge, eig_method=eig_method)
             # Double the MPS for the next initial guess
             if j < doubles
                 Ms[thisk,j+1], Mbs[thisk,j+1] = doubleMPSSize(Ms[thisk,j], Mbs[thisk,j]; chi_max=chi_max, method=method, timing=debug, newsites=sites[this_L+1:2*this_L])
@@ -369,7 +369,7 @@ end
 # """
 function doDMRG(M::MPS, Mb::MPS, W::MPO, chi_max::Int;
     numsweeps::Int = 10, sigma::ComplexF64 = shift_eps*im, dispon = 2, updateon = true, debug = false,
-    method::DM_Method = LR, tol::Float64=0., normalize_against = [], stop_if_not_converge::Bool=false)
+    method::DM_Method = LR, eig_method::Symbol = :arpack, tol::Float64=0., normalize_against = [], stop_if_not_converge::Bool=false)
  
     converged = false
 
@@ -521,7 +521,7 @@ function doDMRG(M::MPS, Mb::MPS, W::MPO, chi_max::Int;
             # Optimize at this step
             if updateon
                 E, M[p], Mb[p] = eigLR(L[p], R[p], W[p], M[p], Mb[p],
-                    sigma = sigma, use_sparse = true, tol = tol, timing = debug,
+                    sigma = sigma, use_sparse = true, tol = tol, timing = debug, method=eig_method,
                     normalize_against = [(LNA[i][p],RNA[i][p],MNb[i][p],LNAb[i][p],RNAb[i][p],MN[i][p],Namp[i]) for i = 1:NumNA])    
                 push!(Ekeep, E)
             end
@@ -564,7 +564,7 @@ function doDMRG(M::MPS, Mb::MPS, W::MPO, chi_max::Int;
             # Optimize at this step
             if updateon
                 E, M[p], Mb[p] = eigLR(L[p], R[p], W[p], M[p], Mb[p],
-                    sigma = sigma, use_sparse = true, tol = tol, timing = debug,
+                    sigma = sigma, use_sparse = true, tol = tol, timing = debug, method=eig_method,
                     normalize_against = [(LNA[i][p],RNA[i][p],MNb[i][p],LNAb[i][p],RNAb[i][p],MN[i][p],Namp[i]) for i = 1:NumNA])    
                 push!(Ekeep, E)
             end

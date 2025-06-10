@@ -4,7 +4,7 @@ using ITensors
 #println(methods(conj))
 
 if !isdefined(Main, :NHDMRG)
-    include("NHDMRG.jl")
+    include("../src/NHDMRG.jl")
     using .NHDMRG
 end
 
@@ -216,7 +216,7 @@ W = LindbladMPO_W(getOp(Dict("ZZ"=>1, "Z"=>0.7, "X"=>1.5)), [getOp(Dict("X"=>dis
 
 #do_DMRGX_and_save(W, sites, 5, "Test1111Datas"; M=M, Mb=Mb, method=LR)
 
-doDMRG_excited_IncL(W, 40, 5, 2; k=3, debug=true, method=BB, stop_if_not_converge=true)
+doDMRG_excited_IncL(W, 50, 6, 2; k=3, debug=true, method=LR, stop_if_not_converge=true, eig_method=:jacdav)
 
 #compare_DMRG_to_ED(W, sites; M=M, Mb=Mb)
 
